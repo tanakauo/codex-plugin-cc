@@ -13,8 +13,9 @@
  *   1. --vault
  *   2. CLAUDIAN_VAULT_ROOT
  *   3. vaultRoot in ~/.claudian/config.json (override with CLAUDIAN_CONFIG)
- *   4. auto-detection of CLAUDIAN_VAULT_NAME (default 田中雄一郎OS保管庫)
- *      under the usual parents (~/TANAKA-BRAIN, ~, ~/Documents, iCloud, ...)
+ *   4. ~/<CLAUDIAN_VAULT_NAME> (default ~/田中雄一郎OS保管庫) — the only
+ *      location auto-detection looks at, so a duplicate elsewhere on disk can
+ *      never be picked by accident
  *
  * The folder mapping is data, not code, so reorganising the vault needs no
  * change here. Layers merge in this order (later wins, per alias):
@@ -64,19 +65,16 @@ export function configFilePath(env = process.env, home = homedir()) {
   return configured ? expandHome(configured, home) : join(home, ".claudian", "config.json");
 }
 
+/**
+ * The one place auto-detection looks: /Users/<user>/田中雄一郎OS保管庫.
+ *
+ * Deliberately a single location. Backups, old copies and duplicates named
+ * like the vault exist elsewhere on disk, and any of them would be a plausible
+ * match — so nothing else is searched. A vault somewhere else is reachable
+ * through --vault, CLAUDIAN_VAULT_ROOT, or ~/.claudian/config.json.
+ */
 export function vaultCandidates(vaultName = DEFAULT_VAULT_NAME, home = homedir()) {
-  return [
-    join(home, vaultName),
-    // Legacy layout, kept last-resort on purpose: an old copy restored from the
-    // Trash must never outrank the vault that actually sits in the home folder.
-    join(home, "TANAKA-BRAIN", vaultName),
-    join(home, "Documents", vaultName),
-    join(home, "Library", "Mobile Documents", "iCloud~md~obsidian", "Documents", vaultName),
-    join(home, "Library", "Mobile Documents", "com~apple~CloudDocs", vaultName),
-    join(home, "Dropbox", vaultName),
-    join(home, "Google Drive", vaultName),
-    join(home, "obsidian", vaultName)
-  ];
+  return [join(home, vaultName)];
 }
 
 function isDirectory(candidate) {
@@ -123,11 +121,9 @@ export function resolveVaultRoot({ explicit = null, env = process.env, home = ho
   }
 
   const candidates = vaultCandidates(vaultName, home);
-  const matches = candidates.filter(isDirectory);
-  if (matches.length > 0) {
-    // Duplicates and restored backups are common while a vault is being
-    // reorganised, so report the ones that lost rather than picking silently.
-    return { root: matches[0], source: "自動検出", vaultName, alternatives: matches.slice(1) };
+  const found = candidates.find(isDirectory);
+  if (found) {
+    return { root: found, source: "自動検出", vaultName };
   }
 
   return { root: null, source: null, vaultName, candidates };
@@ -311,7 +307,6 @@ export function listFolders(argv, { env = process.env, home = homedir() } = {}) 
   return {
     vaultRoot: resolved.root,
     source: resolved.source,
-    alternatives: resolved.alternatives ?? [],
     folders,
     sources
   };
@@ -379,7 +374,6 @@ export function scanFolders(argv, { env = process.env, home = homedir() } = {}) 
   return {
     vaultRoot: resolved.root,
     source: resolved.source,
-    alternatives: resolved.alternatives ?? [],
     configPath,
     directories,
     proposed,
@@ -426,7 +420,6 @@ export function saveNote(argv, { env = process.env, home = homedir(), now = new 
     filePath,
     vaultRoot: resolved.root,
     source: resolved.source,
-    alternatives: resolved.alternatives ?? [],
     folder: relativeDir
   };
 }
@@ -441,17 +434,6 @@ function displayWidth(text) {
   return width;
 }
 
-function warnAboutAlternatives(alternatives) {
-  if (!alternatives || alternatives.length === 0) {
-    return;
-  }
-  console.error(`注意: 保管庫の候補が ${alternatives.length + 1} 件見つかりました。使わなかったもの:`);
-  for (const alternative of alternatives) {
-    console.error(`  - ${alternative}`);
-  }
-  console.error("こちらが正しい場合は CLAUDIAN_VAULT_ROOT で固定してください。");
-}
-
 function main() {
   try {
     const argv = process.argv.slice(2);
@@ -459,7 +441,6 @@ function main() {
     if (argv.includes("--scan-folders")) {
       const scan = scanFolders(argv);
       console.log(`保管庫: ${scan.vaultRoot} (${scan.source})`);
-      warnAboutAlternatives(scan.alternatives);
       console.log(`検出したフォルダ (${scan.directories.length}):`);
       for (const directory of scan.directories) {
         console.log(`  ${directory}`);
@@ -480,9 +461,8 @@ function main() {
     }
 
     if (argv.includes("--list-folders")) {
-      const { vaultRoot, source, alternatives, folders, sources } = listFolders(argv);
+      const { vaultRoot, source, folders, sources } = listFolders(argv);
       console.log(`保管庫: ${vaultRoot} (${source})`);
-      warnAboutAlternatives(alternatives);
       console.log(`フォルダ定義: ${sources.join(" → ")}`);
       const width = Math.max(0, ...Object.keys(folders).map(displayWidth));
       for (const [alias, directory] of Object.entries(folders)) {
@@ -491,9 +471,8 @@ function main() {
       return;
     }
 
-    const { filePath, vaultRoot, source, alternatives, folder } = saveNote(argv);
+    const { filePath, vaultRoot, source, folder } = saveNote(argv);
     console.error(`保管庫: ${vaultRoot}/${folder} (${source})`);
-    warnAboutAlternatives(alternatives);
     console.log(basename(filePath));
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
