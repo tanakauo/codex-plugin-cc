@@ -27,7 +27,7 @@ const SCRIPT = path.resolve("plugins/claudian/scripts/obsidian-save.mjs");
 
 function makeVault(vaultName = DEFAULT_VAULT_NAME) {
   const home = makeTempDir("claudian-home-");
-  const root = path.join(home, "TANAKA-BRAIN", vaultName);
+  const root = path.join(home, vaultName);
   fs.mkdirSync(root, { recursive: true });
   return { home, root };
 }
@@ -117,7 +117,7 @@ test("saveNote reports every searched location when auto-detection fails", () =>
     () => saveNote(["--title", "メモ", "--content", "本文"], { env: {}, home }),
     (error) =>
       /保管庫が見つかりません/.test(error.message) &&
-      error.message.includes(path.join(home, "TANAKA-BRAIN", DEFAULT_VAULT_NAME)) &&
+      error.message.includes(path.join(home, DEFAULT_VAULT_NAME)) &&
       error.message.includes("CLAUDIAN_VAULT_ROOT")
   );
 });
@@ -152,53 +152,50 @@ test("resolveVaultRoot finds the vault directly under the home folder", () => {
 
   assert.equal(resolved.root, vault);
   assert.equal(resolved.source, "自動検出");
-  assert.deepEqual(resolved.alternatives, []);
 });
 
-test("the home-folder vault outranks an old copy restored under TANAKA-BRAIN", () => {
+test("a copy sitting anywhere else is never auto-detected", () => {
   const home = makeTempDir("claudian-home-");
   const vault = path.join(home, DEFAULT_VAULT_NAME);
-  const legacy = path.join(home, "TANAKA-BRAIN", DEFAULT_VAULT_NAME);
   fs.mkdirSync(vault, { recursive: true });
-  fs.mkdirSync(legacy, { recursive: true });
+  for (const decoy of ["TANAKA-BRAIN", "Documents", "Dropbox", "_旧Vaultバックアップ"]) {
+    fs.mkdirSync(path.join(home, decoy, DEFAULT_VAULT_NAME), { recursive: true });
+  }
 
   const resolved = resolveVaultRoot({ env: {}, home });
-
   assert.equal(resolved.root, vault);
-  assert.deepEqual(resolved.alternatives, [legacy]);
 
-  // The losing candidate is reported so a duplicate cannot swallow notes unnoticed.
   const saved = saveNote(["--title", "メモ", "--content", "本文"], { env: {}, home });
   assert.equal(saved.vaultRoot, vault);
-  assert.deepEqual(saved.alternatives, [legacy]);
+  for (const decoy of ["TANAKA-BRAIN", "Documents", "Dropbox", "_旧Vaultバックアップ"]) {
+    assert.deepEqual(fs.readdirSync(path.join(home, decoy, DEFAULT_VAULT_NAME)), []);
+  }
 });
 
-test("the CLI warns when more than one vault candidate exists", () => {
+test("auto-detection stops rather than falling back to a decoy", () => {
   const home = makeTempDir("claudian-home-");
-  const vault = path.join(home, DEFAULT_VAULT_NAME);
-  const legacy = path.join(home, "TANAKA-BRAIN", DEFAULT_VAULT_NAME);
-  fs.mkdirSync(vault, { recursive: true });
-  fs.mkdirSync(legacy, { recursive: true });
+  fs.mkdirSync(path.join(home, "TANAKA-BRAIN", DEFAULT_VAULT_NAME), { recursive: true });
 
-  const result = run(process.execPath, [SCRIPT, "--title", "メモ", "--content", "本文"], {
-    env: { ...process.env, HOME: home, CLAUDIAN_VAULT_ROOT: "", CLAUDIAN_CONFIG: path.join(home, "absent.json") }
-  });
-
-  assert.equal(result.status, 0);
-  assert.match(result.stderr, /保管庫の候補が 2 件見つかりました/);
-  assert.match(result.stderr, new RegExp(legacy.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.equal(fs.existsSync(path.join(vault, "00_INBOX", result.stdout.trim())), true);
+  assert.throws(
+    () => saveNote(["--title", "メモ", "--content", "本文"], { env: {}, home }),
+    /保管庫が見つかりません/
+  );
+  assert.deepEqual(fs.readdirSync(path.join(home, "TANAKA-BRAIN", DEFAULT_VAULT_NAME)), []);
 });
 
 test("resolveVaultRoot expands ~ and honours CLAUDIAN_VAULT_NAME", () => {
   const home = makeTempDir("claudian-home-");
-  const named = path.join(home, "Documents", "別の保管庫");
+  const elsewhere = path.join(home, "Documents", "別の保管庫");
+  const named = path.join(home, "別の保管庫");
+  fs.mkdirSync(elsewhere, { recursive: true });
   fs.mkdirSync(named, { recursive: true });
 
+  // An explicit path may point anywhere, ~ included.
   assert.equal(
     resolveVaultRoot({ env: { CLAUDIAN_VAULT_ROOT: "~/Documents/別の保管庫" }, home }).root,
-    named
+    elsewhere
   );
+  // Auto-detection only renames what it looks for, never where it looks.
   assert.equal(resolveVaultRoot({ env: { CLAUDIAN_VAULT_NAME: "別の保管庫" }, home }).root, named);
 });
 
